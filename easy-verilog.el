@@ -1,10 +1,11 @@
-;;; easy-escape.el --- Improve readability of escape characters in regular expressions
+;;; easy-verilog.el --- Improve readability of Verilog
 
-;; Copyright (C) 2015 Clément Pit--Claudel
-;; Author: Clément Pit--Claudel <clement.pitclaudel@live.com>
+;; Copyright (C) 2016-2019 Free Software Foundation, Inc.
+
+;; Author: Yuriy VG <yuravg@gmail.com>
 ;; Version: 0.1
-;; Keywords: convenience, lisp, tools
-;; URL: https://github.com/cpitclaudel/easy-escape
+;; Keywords: Verilog, tools
+;; URL: https://github.com/yuravg/easy-verilog
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -21,128 +22,100 @@
 
 ;;; Commentary:
 
-;; `easy-escape-minor-mode' uses syntax highlighting and composition to make ELisp regular
-;; expressions more readable.  More precisely, it hides double backslashes
-;; preceding regexp specials (`()|'), composes other double backslashes into
-;; single ones, and applies a special face to each.  The underlying buffer text
-;; is not modified.
-;;
-;; For example, `easy-escape` prettifies this:
-;;   "\\(?:\\_<\\\\newcommand\\_>\\s-*\\)?"
-;; into this (`^' indicates a different color):
-;;   "(?:\_<\\newcommand\_>\s-*)?".
-;;    ^                        ^
-;;
-;; The default is to use a single \ character instead of two, and to hide
-;; backslashes preceding parentheses or `|'.  The escape character and its color
-;; can be customized using `easy-escape-face' and `easy-escape-character' (which see), and backslashes
-;; before ()| can be shown by disabling `easy-escape-hide-escapes-before-delimiters'.
+;; This package provides minor mode for Verilog-mode, URL: http://www.veripool.org/verilog-mode
+;; The main function, `easy-verilog-minor-mode'
+;; is replace words "begin" and "end" to symbol "{" and "}"
+;; to improve readability of Verilog.
 ;;
 ;; Suggested setup:
-;;   (add-hook 'lisp-mode-hook 'easy-escape-minor-mode)
+;;  (add-hook 'verilog-mode-hook 'easy-verilog-minor-mode)
+;; to adjust easy-verilog-face, you can use this for example:
+;;  (set-face-attribute 'easy-verilog-face nil :weight 'bold :foreground "Blue")
 ;;
-;; NOTE: If you find the distinction between the fontified double-slash and the
-;; single slash too subtle, try the following:
+;; * Adjust the foreground of `easy-verilog-face'
+;; * Set `easy-verilog-character-begin' to a different character.
+;; * Set `easy-verilog-character-end' to a different character.
 ;;
-;; * Adjust the foreground of `easy-escape-face'
-;; * Set `easy-escape-character' to a different character.
 
 ;;; Code:
 
 (require 'font-lock)
+(require 'verilog-mode)
 
-(defgroup easy-escape nil
-  "Improve readability of escape characters"
+(defgroup easy-verilog nil
+  "Improve readability of Verilog."
   :group 'programming)
 
-(defface easy-escape-face
-  '((t :weight bold))
-  "Face used to highlight \\\\ in strings"
-  :group 'easy-escape)
+(defface easy-verilog-face
+  '((t :weight normal))
+  "Face used to highlight char to replace 'begin' and 'end' words"
+  :group 'easy-verilog)
 
-(defface easy-escape-delimiter-face
-  '((t :weight bold :slant normal :inherit font-lock-warning-face))
-  "Face used to highlight groups and alternations in strings"
-  :group 'easy-escape)
+(defcustom easy-verilog-character-begin ?\{
+  "Character to replase word 'begin'."
+  :group 'easy-verilog)
 
-(defcustom easy-escape-character ?\\
-  "Character by which \\\\ is replaced when `easy-escape-minor-mode' is active.
-Good candidates include the following:
-  \\ REVERSE SOLIDUS (the default, typed as '?\\\\')
-  ╲ BOX DRAWINGS LIGHT DIAGONAL UPPER LEFT TO LOWER RIGHT (typed as '?╲')
-  ⟍ MATHEMATICAL FALLING DIAGONAL (typed as '?⟍')
-  ⑊ OCR DOUBLE BACKSLASH (typed as '?⑊')
-  ⤡ NORTH WEST AND SOUTH EAST ARROW (typed as '?⤡')
-  ↘ SOUTH EAST ARROW (typed as '?↘')
-  ⇘ SOUTH EAST DOUBLE ARROW (typed as '?⇘')
-  ⦥ MATHEMATICAL REVERSED ANGLE WITH UNDERBAR (typed as '?⦥')
-  ⦣ MATHEMATICAL REVERSED ANGLE (typed as '?⦣')
-  ⧹ BIG REVERSE SOLIDUS (typed as '?⧹')
-Most of these characters require non-standard fonts to display properly,
-however."
-  :group 'easy-escape)
+(defcustom easy-verilog-character-end ?\}
+  "Character to replase word 'end'."
+  :group 'easy-verilog)
 
-(defcustom easy-escape-hide-escapes-before-delimiters t
-  "Whether to hide \\\\ when it precedes one of `(', `|', and `)'."
-  :group 'easy-escape
-  :type 'boolean)
-
-(defun easy-escape--in-string-p (pos)
+(defun easy-verilog--out-comment-p (pos)
   "Indicate whether POS is inside of a string."
   (let ((face (get-text-property pos 'face)))
-    (or (eq 'font-lock-doc-face face)
-        (eq 'font-lock-string-face face)
-        (and (listp face) (or (memq 'font-lock-doc-face face)
-                              (memq 'font-lock-string-face face))))))
+    (or (not (eq 'font-lock-comment-face face))
+		(and (listp face) (memq 'font-lock-string-face face)))))
 
-(defun easy-escape--mark-in-string (re lim)
-  "Find next match for RE before LIM that falls in a string."
+(defun easy-verilog--out-string-p (pos)
+  "Indicate whether POS is inside of a string."
+  (let ((face (get-text-property pos 'face)))
+    (or (not (eq 'font-lock-string-face face))
+		(and (listp face) (memq 'font-lock-string-face face)))))
+
+(defun easy-verilog--mark-verilogs-begin (limit)
+  "Position point at end of next 'begin', and set match data.
+Search ends at LIMIT."
   (catch 'found
-    (while (re-search-forward re lim t)
-      (when (easy-escape--in-string-p (match-beginning 0))
-        (throw 'found t)))))
+    (while (re-search-forward "\\<begin\\>" limit t)
+	  (when (and (easy-verilog--out-comment-p (match-beginning 0))
+				 (easy-verilog--out-string-p (match-beginning 0)))
+		(throw 'found t)))))
 
-(defun easy-escape--mark-escapes (limit)
-  "Search for \\\\ before LIMIT."
-  (easy-escape--mark-in-string "\\(\\\\\\\\\\)" limit))
+(defun easy-verilog--mark-verilogs-end (limit)
+  "Position point at end of next 'end', and set match data.
+Search ends at LIMIT."
+  (catch 'found
+    (while (re-search-forward "\\<end\\>" limit t)
+      (when (and (easy-verilog--out-comment-p (match-beginning 0))
+				 (easy-verilog--out-string-p (match-beginning 0)))
+		(throw 'found t)))))
 
-(defun easy-escape--mark-delims (limit)
-  "Search for a delimiter or alternation before LIMIT."
-  (easy-escape--mark-in-string "\\(\\\\\\\\\\)\\([()|]\\)" limit))
+(defun easy-verilog--compose-begin (start)
+  "Compose characters from START to (+ 5 START) into `easy-verilog-character-begin'."
+  (compose-region start (+ 5 start) easy-verilog-character-begin))
 
-(defun easy-escape--compose (n char)
-  "Compose match group N into CHAR."
-  (compose-region (match-beginning n) (match-end n) char))
+(defun easy-verilog--compose-end (start)
+  "Compose characters from START to (+ 3 START) into `easy-verilog-character-end'."
+  (compose-region start (+ 3 start) easy-verilog-character-end))
 
-(defconst easy-escape--keywords
-  '((easy-escape--mark-escapes
-     (0 (progn (easy-escape--compose 0 easy-escape-character) 'easy-escape-face) prepend))
-    (easy-escape--mark-delims
-     (0 (progn (easy-escape--compose 0 (char-after (match-beginning 2))) 'easy-escape-delimiter-face) prepend)))
+(defconst easy-verilog--keywords
+  '((easy-verilog--mark-verilogs-begin (0 (easy-verilog--compose-begin (match-beginning 0)))
+									   (0 'easy-verilog-face append))
+	(easy-verilog--mark-verilogs-end (0 (easy-verilog--compose-end (match-beginning 0)))
+									 (0 'easy-verilog-face append)))
   "Font-lock keyword list used internally.")
 
 ;;;###autoload
-(define-minor-mode easy-escape-minor-mode
-  "Compose escape signs together to make regexps more readable.
-When this mode is active, \\\\ in strings is displayed as a
-single \\, fontified using `easy-escape-face' and composed into
-`easy-escape-character'.
-
-If you find the distinction between the fontified double-slash
-and the single slash too subtle, try the following:
-
-* Adjust the foreground of `easy-escape-face'
-* Set `easy-escape-character' to a different character."
-  :lighter " ez-esc"
-  :group 'easy-escape
-  (cond
-   (easy-escape-minor-mode
-    (font-lock-add-keywords nil easy-escape--keywords)
-    (make-local-variable 'font-lock-extra-managed-props)
-    (add-to-list 'font-lock-extra-managed-props 'composition))
-   (t (font-lock-remove-keywords nil easy-escape--keywords)))
-  (if (>= emacs-major-version 25) (font-lock-flush)
+(define-minor-mode easy-verilog-minor-mode
+  "Replace words 'begin' and 'end' to symbol '{' and '}' to improve readability of Verilog."
+  :lighter " eV"
+  :group 'easy-verilog
+  (if easy-verilog-minor-mode
+      (progn (font-lock-add-keywords nil easy-verilog--keywords)
+             (add-to-list (make-local-variable 'font-lock-extra-managed-props) 'composition))
+    (font-lock-remove-keywords nil easy-verilog--keywords))
+  (if (>= emacs-major-version 25)
+      (font-lock-flush)
     (with-no-warnings (font-lock-fontify-buffer))))
 
-(provide 'easy-escape)
-;;; easy-escape.el ends here
+(provide 'easy-verilog)
+;;; easy-verilog.el ends here
